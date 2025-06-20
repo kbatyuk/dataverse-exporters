@@ -1,4 +1,3 @@
-
 package io.gdcc.export.helloworld;
 
 import com.google.auto.service.AutoService;
@@ -9,88 +8,167 @@ import java.io.OutputStream;
 import java.util.Locale;
 
 import jakarta.json.Json;
+import jakarta.json.JsonArrayBuilder;
 import jakarta.json.JsonObject;
 import jakarta.json.JsonObjectBuilder;
 import jakarta.ws.rs.core.MediaType;
 
-/**
- * An example exporter that exports dataset metadata as a JSON object. This
- * simple example demonstrates what is needed to register as a Dataverse
- * Exporter and how to retrieve input metadata and deliver the generated
- * metadata format. The new format itself is a minor variation of the built-in
- * JSON metadata format.
- * 
- */
-//This annotation makes the Exporter visible to Dataverse. How it works is well documented on the Internet.
 @AutoService(Exporter.class)
-//All Exporter implementations must implement this interface or the XMLExporter interface that extends it.
 public class HelloWorldExporter implements Exporter {
 
-    // These methods provide information about the Exporter to Dataverse
-
-    /*
-     * The name of the format it creates. If this format is already provided by a
-     * built-in exporter, this Exporter will override the built-in one. (Note that
-     * exports are cached, so existing metadata export files are not updated
-     * immediately.)
-     */
     @Override
     public String getFormatName() {
         return "dataverse_json";
     }
 
-    // The display name shown in the UI
     @Override
     public String getDisplayName(Locale locale) {
-        // This example includes the language in the name to demonstrate that locale is
-        // available. A production exporter would instead use the locale to generate an
-        // appropriate translation.
         return "My JSON in " + locale.getLanguage();
     }
 
-    // Whether the exported format should be available as an option for Harvesting
     @Override
     public Boolean isHarvestable() {
         return false;
     }
 
-    // Whether the exported format should be available for download in the UI and
-    // API
     @Override
     public Boolean isAvailableToUsers() {
         return true;
     }
 
-    // Defines the mime type of the exported format - used when metadata is
-    // downloaded, i.e. to trigger an appropriate viewer in the user's browser.
     @Override
     public String getMediaType() {
         return MediaType.APPLICATION_JSON;
     }
 
-    // This method is called by Dataverse when metadata for a given dataset in this
-    // format is requested.
     @Override
     public void exportDataset(ExportDataProvider dataProvider, OutputStream outputStream) throws ExportException {
         try {
-            // Start building the output format.
-            JsonObjectBuilder datasetJsonBuilder = Json.createObjectBuilder();
-            datasetJsonBuilder.add("name", getFormatName());
-            /*
-             * Retrieve and parse the input metadata. In this example, no parsing is done
-             * and the input metadata is simply copied into the JSON structure as a value
-             * for the inputJson field. A production exporter would parse the input metadata
-             * and include only the metadata matching the output format.
-             */
-            datasetJsonBuilder.add("inputJson", dataProvider.getDatasetJson());
-            // Write the output format to the output stream.
-            outputStream.write(datasetJsonBuilder.build().toString().getBytes("UTF8"));
-            // Flush the output stream - The output stream is automatically closed by
-            // Dataverse and should not be closed in the Exporter.
+            JsonObject inputJson = dataProvider.getDatasetJson().asJsonObject();
+
+            JsonObject datasetVersion = inputJson.getJsonObject("datasetVersion");
+            JsonObject metadataBlocks = datasetVersion.getJsonObject("metadataBlocks");
+
+            // Cruise fields
+            JsonObject cruiseBlock = metadataBlocks.getJsonObject("cruise");
+            JsonObject awardsBlock = metadataBlocks.getJsonObject("awards");
+            JsonObject personsBlock = metadataBlocks.getJsonObject("persons");
+            JsonObject scheduleBlock = metadataBlocks.getJsonObject("scheduler_records");
+
+            JsonObjectBuilder cruiseBuilder = Json.createObjectBuilder();
+
+            // 1. Cruise id (from cnumber field array)
+            String cruiseId = getFieldValueFromArray(cruiseBlock, "cnumber");
+            cruiseBuilder.add("id", cruiseId);
+
+            // 2. schedule_records
+            JsonArrayBuilder scheduleRecordsBuilder = Json.createArrayBuilder();
+            if (scheduleBlock != null && scheduleBlock.containsKey("fields")) {
+                for (var field : scheduleBlock.getJsonArray("fields")) {
+                    JsonObject record = (JsonObject) field;
+                    if ("scheduler_id".equals(record.getString("typeName"))) {
+                        String schedulerId = record.getString("value", "");
+                        String schedulerCruiseId = getFieldValue(scheduleBlock, "scheduler_id");
+                        scheduleRecordsBuilder.add(Json.createObjectBuilder()
+                                .add("scheduler_id", getFieldValue(scheduleBlock, "scheduler"))
+                                .add("scheduler_cruise_id", schedulerCruiseId)
+                        );
+                        break;
+                    }
+                }
+            }
+            cruiseBuilder.add("schedule_records", scheduleRecordsBuilder);
+
+            // 3. name
+            String cruiseName = getFieldValue(datasetVersion.getJsonObject("metadataBlocks").getJsonObject("citation"), "title");
+            cruiseBuilder.add("name", cruiseName);
+
+            // 4. vessel_id
+            cruiseBuilder.add("vessel_id", getFieldValue(cruiseBlock, "vessel_id"));
+
+            // 5. depart_date
+            cruiseBuilder.add("depart_date", getFieldValue(cruiseBlock, "depart_date"));
+
+            // 6. depart_port_id
+            cruiseBuilder.add("depart_port_id", getFieldValue(cruiseBlock, "depart_port_id"));
+
+            // 7. arrive_date
+            cruiseBuilder.add("arrive_date", getFieldValue(cruiseBlock, "arrive_date"));
+
+            // 8. arrive_port_id
+            // Note the typo in sample JSON: "arrive_poer_id"
+            cruiseBuilder.add("arrive_port_id", getFieldValue(cruiseBlock, "arrive_poer_id"));
+
+            // 9. persons
+            JsonArrayBuilder personsBuilder = Json.createArrayBuilder();
+            if (personsBlock != null && personsBlock.containsKey("fields")) {
+                for (var field : personsBlock.getJsonArray("fields")) {
+                    JsonObject personField = (JsonObject) field;
+                    if ("person_n".equals(personField.getString("typeName"))) {
+                        for (var personVal : personField.getJsonArray("value")) {
+                            JsonObject personObj = (JsonObject) personVal;
+                            personsBuilder.add(Json.createObjectBuilder()
+                                .add("id", personObj.getString("person_name", ""))
+                                .add("name", personObj.getString("person_name", ""))
+                                .add("institution_id", personObj.getString("instituion_id", ""))
+                                .add("role", personObj.getString("role", ""))
+                            );
+                        }
+                    }
+                }
+            }
+            cruiseBuilder.add("persons", personsBuilder);
+
+            // 10. awards
+            JsonArrayBuilder awardsBuilder = Json.createArrayBuilder();
+            if (awardsBlock != null && awardsBlock.containsKey("fields")) {
+                JsonObject awardFields = awardsBlock.getJsonArray("fields").getJsonObject(0);
+                awardsBuilder.add(Json.createObjectBuilder()
+                        .add("project_number", awardFields.getString("project_number", ""))
+                        .add("name", awardFields.getString("project_name", ""))
+                        .add("agency_id", awardFields.getString("agency_id", ""))
+                        .add("agency_department", awardFields.getString("agency_department", ""))
+                );
+            }
+            cruiseBuilder.add("awards", awardsBuilder);
+
+            // 11. embargoes (from termsOfAccess)
+            String embargoes = datasetVersion.getString("termsOfAccess", "none");
+            cruiseBuilder.add("embargoes", embargoes);
+
+            // Build the top-level object
+            JsonObject output = Json.createObjectBuilder()
+                .add("cruise", cruiseBuilder)
+                .build();
+
+            outputStream.write(output.toString().getBytes("UTF8"));
             outputStream.flush();
         } catch (Exception e) {
-            //If anything goes wrong, an Exporter should throw an ExportException.
-            throw new ExportException("Unknown exception caught during JSON export.");
+            throw new ExportException("Unknown exception caught during JSON export: " + e.getMessage());
         }
+    }
+
+    // Helper function to get a primitive field value from a metadata block
+    private String getFieldValue(JsonObject block, String typeName) {
+        if (block == null || !block.containsKey("fields")) return "";
+        for (var field : block.getJsonArray("fields")) {
+            JsonObject f = (JsonObject) field;
+            if (typeName.equals(f.getString("typeName"))) {
+                return f.getString("value", "");
+            }
+        }
+        return "";
+    }
+
+    // Helper to get the first value from a primitive array field
+    private String getFieldValueFromArray(JsonObject block, String typeName) {
+        if (block == null || !block.containsKey("fields")) return "";
+        for (var field : block.getJsonArray("fields")) {
+            JsonObject f = (JsonObject) field;
+            if (typeName.equals(f.getString("typeName")) && f.get("value") != null && f.get("value").getValueType() == jakarta.json.JsonValue.ValueType.ARRAY) {
+                return f.getJsonArray("value").getString(0, "");
+            }
+        }
+        return "";
     }
 }
